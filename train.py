@@ -15,6 +15,8 @@ from cfg import parse_cfg
 from darknet import Darknet
 import argparse
 
+from tensorboardX import SummaryWriter
+
 FLAGS = None
 unparsed = None
 device = None
@@ -25,7 +27,7 @@ device = None
 use_cuda      = None
 eps           = 1e-5
 keep_backup   = 5
-save_interval = 5  # epoches
+save_interval = 1000  # epoches
 test_interval = 10  # epoches
 dot_interval  = 70  # batches
 
@@ -103,6 +105,8 @@ def main():
     if weightfile is not None:
         model.load_weights(weightfile)
 
+    monitor = SummaryWriter()
+
     #model.print_network()
 
     nsamples = file_lines(trainlist)
@@ -133,8 +137,8 @@ def main():
         else:
             params += [{'params': [value], 'weight_decay': decay*batch_size}]
     global optimizer
-    optimizer = optim.SGD(model.parameters(), 
-                        lr=learning_rate/batch_size, momentum=momentum, 
+    optimizer = optim.SGD(model.parameters(),
+                        lr=learning_rate/batch_size, momentum=momentum,
                         dampening=0, weight_decay=decay*batch_size)
 
     if evaluate:
@@ -142,6 +146,7 @@ def main():
         test(0)
     else:
         try:
+            max_epochs += init_epoch
             print("Training for ({:d},{:d})".format(init_epoch+1, max_epochs))
             fscore = 0
             if init_eval and not no_eval and init_epoch > test_interval:
@@ -151,9 +156,9 @@ def main():
             else:
                 mfscore = 0.5
             for epoch in range(init_epoch+1, max_epochs+1):
-                nsamples = train(epoch)
-                if epoch % save_interval == 0:
-                    savemodel(epoch, nsamples)
+                nsamples = train(epoch, monitor)
+                # if epoch % save_interval == 0:
+                #     savemodel(epoch, nsamples)
                 if not no_eval and epoch >= test_interval and (epoch%test_interval) == 0:
                     print('>> intermittent evaluating ...')
                     fscore = test(epoch)
@@ -165,7 +170,7 @@ def main():
         except KeyboardInterrupt:
             print('='*80)
             print('Exiting from training by interrupt')
-                
+
 def adjust_learning_rate(optimizer, batch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     lr = learning_rate
@@ -188,7 +193,7 @@ def curmodel():
         cur_model = model
     return cur_model
 
-def train(epoch):
+def train(epoch, monitor):
     global processed_batches
     t0 = time.time()
     cur_model = curmodel()
@@ -200,7 +205,7 @@ def train(epoch):
                         shuffle=True,
                         transform=transforms.Compose([
                             transforms.ToTensor(),
-                        ]), 
+                        ]),
                         train=True,
                         seen=cur_model.seen,
                         batch_size=batch_size,
@@ -230,11 +235,18 @@ def train(epoch):
         output = model(data)
 
         t6 = time.time()
-        org_loss = []
+        org_loss   = []
+        cls_loss   = []
+        conf_loss  = []
+        coord_loss = []
         for i, l in enumerate(loss_layers):
             l.seen = l.seen + data.data.size(0)
-            ol=l(output[i]['x'], target)
+            # ol=l(output[i]['x'], target)
+            coord, conf, cls, ol = l(output[i]['x'], target)
             org_loss.append(ol)
+            cls_loss.append(cls)
+            conf_loss.append(conf)
+            coord_loss.append(coord)
 
         t7 = time.time()
 
@@ -242,6 +254,10 @@ def train(epoch):
         #    l.backward(retain_graph=True if i < len(org_loss)-1 else False)
         # org_loss.reverse()
         sum(org_loss).backward()
+        monitor.add_scalar('yolov3/loss', sum(org_loss), n_iter)
+        monitor.add_scalar('yolov3/coord_loss', sum(coord_loss), n_iter)
+        monitor.add_scalar('yolov3/conf_loss', sum(conf_loss), n_iter)
+        monitor.add_scalar('yolov3/cls_loss', sum(cls_loss), n_iter)
 
         nn.utils.clip_grad_norm_(model.parameters(), 10000)
         #for p in model.parameters():
@@ -249,7 +265,7 @@ def train(epoch):
 
         t8 = time.time()
         optimizer.step()
-        
+
         t9 = time.time()
         if False and batch_idx > 1:
             avg_time[0] = avg_time[0] + (t2-t1)
@@ -276,12 +292,16 @@ def train(epoch):
         org_loss.clear()
         gc.collect()
 
+        n_iter = epoch * batch_size + batch_idx
+        if n_iter % save_interval == 0:
+            savemodel(n_iter, batch_idx)
+
     print('')
     t1 = time.time()
     nsamples = len(train_loader.dataset)
     logging('[%03d] training with %f samples/s' % (epoch, nsamples/(t1-t0)))
     return nsamples
-    
+
 def savemodel(epoch, nsamples, curmax=False):
     cur_model = curmodel()
     if curmax:
@@ -289,7 +309,7 @@ def savemodel(epoch, nsamples, curmax=False):
     else:
         logging('save weights to %s/%06d.weights' % (backupdir, epoch))
     cur_model.seen = epoch * nsamples
-    if curmax: 
+    if curmax:
         cur_model.save_weights('%s/localmax.weights' % (backupdir))
     else:
         cur_model.save_weights('%s/%06d.weights' % (backupdir, epoch))
@@ -344,7 +364,7 @@ def test(epoch):
                     # pred_boxes and gt_boxes are transposed for torch.max
                     if best_iou > iou_thresh and pred_boxes[6][best_j] == gt_boxes[6][0]:
                         correct += 1
-                        
+
     precision = 1.0*correct/(proposals+eps)
     recall = 1.0*correct/(total+eps)
     fscore = 2.0*precision*recall/(precision+recall+eps)

@@ -148,9 +148,9 @@ class YoloLayer(nn.Module):
         tcls = tcls.view(cls_anchor_dim, nC).to(self.device)
 
         nProposals = int((conf > 0.25).sum())
-        
+
         tcoord = tcoord.view(4, cls_anchor_dim).to(self.device)
-        tconf = tconf.view(cls_anchor_dim).to(self.device)        
+        tconf = tconf.view(cls_anchor_dim).to(self.device)
 
         conf_mask = (obj_mask + noobj_mask).view(cls_anchor_dim).to(self.device)
         obj_mask = obj_mask.view(cls_anchor_dim).to(self.device)
@@ -170,9 +170,9 @@ class YoloLayer(nn.Module):
             print('     build targets : %f' % (t3 - t2))
             print('       create loss : %f' % (t4 - t3))
             print('             total : %f' % (t4 - t0))
-        print('%d: Layer(%03d) nGT %3d, nRC %3d, nRC75 %3d, nPP %3d, loss: box %6.3f, conf %6.3f, class %6.3f, total %7.3f' 
+        print('%d: Layer(%03d) nGT %3d, nRC %3d, nRC75 %3d, nPP %3d, loss: box %6.3f, conf %6.3f, class %6.3f, total %7.3f'
                 % (self.seen, self.nth_layer, nGT, nRecall, nRecall75, nProposals, loss_coord, loss_conf, loss_cls, loss))
         if math.isnan(loss.item()):
             print(conf, tconf)
             sys.exit(0)
-        return loss
+        return loss_coord, loss_conf, loss_cls, loss
