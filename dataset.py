@@ -11,7 +11,9 @@ from utils import read_truths_args, read_truths
 from image import *
 
 class listDataset(Dataset):
-    def __init__(self, root, shape=None, shuffle=True, crop=False, jitter=0.3, hue=0.1, saturation=1.5, exposure=1.5, transform=None, target_transform=None, train=False, seen=0, batch_size=64, num_workers=4):
+    def __init__(self, root, shape=None, shuffle=True, crop=False, jitter=0.05, hue=0.1,
+                 saturation=1.5, exposure=1.5, transform=None, target_transform=None, train=False,
+                 seen=0, batch_size=64, num_workers=4, n_boxes=50):
        with open(root, 'r') as file:
            self.lines = file.readlines()
 
@@ -32,6 +34,7 @@ class listDataset(Dataset):
        self.hue = hue
        self.saturation = saturation
        self.exposure = exposure
+       self.n_boxes = n_boxes
 
     def __len__(self):
         return self.nSamples
@@ -56,15 +59,16 @@ class listDataset(Dataset):
         if self.train:
             if index % 64 == 0: # in paper, every 10 batches, but we did every 64 images
                 self.shape = self.get_different_scale()
-            img, label = load_data_detection(imgpath, self.shape, self.crop, self.jitter, self.hue, self.saturation, self.exposure)
+            img, label = load_data_detection(imgpath, self.shape, self.crop, self.jitter, self.hue,
+                                             self.saturation, self.exposure, n_boxes=self.n_boxes)
             label = torch.from_numpy(label)
         else:
             img = Image.open(imgpath).convert('RGB')
             if self.shape:
                 img, org_w, org_h = letterbox_image(img, self.shape[0], self.shape[1]), img.width, img.height
-    
+
             labpath = imgpath.replace('images', 'labels').replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png','.txt')
-            label = torch.zeros(50*5)
+            label = torch.zeros(self.n_boxes * 5)
             #if os.path.getsize(labpath):
             #tmp = torch.from_numpy(np.loadtxt(labpath))
             try:
@@ -75,10 +79,10 @@ class listDataset(Dataset):
             tmp = tmp.view(-1)
             tsz = tmp.numel()
             #print('labpath = %s , tsz = %d' % (labpath, tsz))
-            if tsz > 50*5:
-                label = tmp[0:50*5]
+            if tsz > self.n_boxes * 5:
+                label = tmp[0: self.n_boxes * 5]
             elif tsz > 0:
-                label[0:tsz] = tmp
+                label[0: tsz] = tmp
 
         if self.transform is not None:
             img = self.transform(img)
