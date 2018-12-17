@@ -1,1 +1,4 @@
 *.pyc
+checkpoints/*
+runs/*
+*.weights
