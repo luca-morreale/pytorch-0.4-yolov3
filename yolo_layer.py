@@ -59,7 +59,7 @@ class YoloLayer(nn.Module):
             cur_ious = torch.zeros(nAnchors)
             tbox = target[b].view(-1,5).to("cpu")
 
-            for t in range(50):
+            for t in range(tbox.size(0)):
                 if tbox[t][1] == 0:
                     break
                 gx, gy = tbox[t][1] * nW, tbox[t][2] * nH
@@ -69,7 +69,7 @@ class YoloLayer(nn.Module):
             ignore_ix = (cur_ious>self.ignore_thresh).view(nA,nH,nW)
             noobj_mask[b][ignore_ix] = 0
 
-            for t in range(50):
+            for t in range(tbox.size(0)):
                 if tbox[t][1] == 0:
                     break
                 nGT += 1
@@ -153,13 +153,19 @@ class YoloLayer(nn.Module):
         tconf = tconf.view(cls_anchor_dim).to(self.device)
 
         conf_mask = (obj_mask + noobj_mask).view(cls_anchor_dim).to(self.device)
-        obj_mask = obj_mask.view(cls_anchor_dim).to(self.device)
+        obj_mask= obj_mask.view(cls_anchor_dim).to(self.device)
         coord_mask = coord_mask.view(cls_anchor_dim).to(self.device)
 
         t3 = time.time()
         loss_coord = nn.MSELoss(reduction='sum')(coord*coord_mask, tcoord*coord_mask)/nB
-        loss_conf  = nn.BCELoss(reduction='sum')(conf*conf_mask, tconf*conf_mask)/nB
-        loss_cls   = nn.BCEWithLogitsLoss(reduction='sum')(cls, tcls)/nB
+        loss_conf  = nn.MSELoss(reduction='sum')(conf[conf_mask.type(torch.uint8)],
+                        tconf[conf_mask.type(torch.uint8)]) / torch.sum(conf_mask)
+
+        loss_cls   = nn.CrossEntropyLoss(reduction='none')(cls, torch.argmax(tcls, 1).long())
+        mask_cls = torch.sum(tcls, 1) > 0
+        loss_cls *= mask_cls.float()
+        loss_cls = torch.sum(loss_cls) / (torch.sum(mask_cls.float()) + 1.0e-6)
+        # BCEWithLogitsLoss(reduction='sum')(cls, tcls)/nB
         loss = loss_coord + loss_conf + loss_cls
 
         t4 = time.time()
@@ -170,9 +176,8 @@ class YoloLayer(nn.Module):
             print('     build targets : %f' % (t3 - t2))
             print('       create loss : %f' % (t4 - t3))
             print('             total : %f' % (t4 - t0))
-        print('%d: Layer(%03d) nGT %3d, nRC %3d, nRC75 %3d, nPP %3d, loss: box %6.3f, conf %6.3f, class %6.3f, total %7.3f'
-                % (self.seen, self.nth_layer, nGT, nRecall, nRecall75, nProposals, loss_coord, loss_conf, loss_cls, loss))
         if math.isnan(loss.item()):
+            import ipdb; ipdb.set_trace()
             print(conf, tconf)
             sys.exit(0)
         return loss_coord, loss_conf, loss_cls, loss
