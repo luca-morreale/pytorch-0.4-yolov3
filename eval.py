@@ -8,7 +8,7 @@ import dataset
 import random
 import math
 import numpy as np
-from utils import get_all_boxes, multi_bbox_ious, nms, read_data_cfg, logging
+from utils import get_all_boxes, multi_bbox_ious, nms, read_data_cfg, logging, list_weights
 from cfg import parse_cfg
 from darknet import Darknet
 import argparse
@@ -20,9 +20,10 @@ seed          = 22222
 eps           = 1e-5
 
 # Test parameters
-conf_thresh   = 0.25
+conf_thresh   = 0.2
 nms_thresh    = 0.4
 iou_thresh    = 0.5
+n_boxes       = 10
 
 FLAGS = None
 
@@ -57,7 +58,7 @@ def main():
     init_height  = model.height
 
     kwargs = {'num_workers': num_workers, 'pin_memory': True} if use_cuda else {}
-    
+
     global test_loader
     test_loader = torch.utils.data.DataLoader(
         dataset.listDataset(testlist, shape=(init_width, init_height),
@@ -72,17 +73,19 @@ def main():
             model = torch.nn.DataParallel(model)
             model = model.module
     model = model.to(torch.device("cuda" if use_cuda else "cpu"))
-    for w in FLAGS.weights:
+
+    weight_files = list_weights(FLAGS.weights)
+    for w in weight_files:
         model.load_weights(w)
         logging('evaluating ... %s' % (w))
         test()
 
 def test():
     def truths_length(truths):
-        for i in range(50):
+        for i in range(n_boxes):
             if truths[i][1] == 0:
                 return i
-        return 50
+        return n_boxes
 
     model.eval()
     num_classes = model.num_classes
@@ -128,12 +131,12 @@ def test():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data', '-d',    type=str, 
-        default='cfg/sketch.data', help='data definition file')
-    parser.add_argument('--config', '-c',  type=str, 
-        default='cfg/sketch.cfg', help='network configuration file')
-    parser.add_argument('--weights', '-w', type=str, nargs='+', 
-        default=['weights/yolov3.weights'], help='initial weights file')
+    parser.add_argument('--data', '-d',    type=str,
+        required=True, help='data definition file')
+    parser.add_argument('--config', '-c',  type=str,
+        required=True, help='network configuration file')
+    parser.add_argument('--weights', '-w', type=str, nargs='+',
+        required=True, help='initial weights file')
     FLAGS, _ = parser.parse_known_args()
 
     main()
