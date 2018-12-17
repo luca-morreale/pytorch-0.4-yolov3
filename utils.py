@@ -462,8 +462,9 @@ def list_weights(weights_list):
 
     for w in weights_list:
         if os.path.isdir(w):
-            weights.extend([f for f in listdir(w) \
-                            if op.path.isfile(join(w, f)) and w.split('.')[-1] == 'weights'])
+            weights.extend([os.path.join(w,f) for f in os.listdir(w)  \
+                            if os.path.isfile(os.path.join(w, f)) and \
+                                f.split('.')[-1] == 'weights'])
         else:
             weights.append(w)
     return weights
