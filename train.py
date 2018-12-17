@@ -26,7 +26,7 @@ device = None
 # Train parameters
 use_cuda      = None
 eps           = 1e-5
-keep_backup   = 5
+keep_backup   = 10
 save_interval = 1000  # epoches
 test_interval = 10  # epoches
 dot_interval  = 70  # batches
@@ -83,16 +83,22 @@ def main():
     globals()["decay"]         = float(net_options['decay'])
     globals()["steps"]         = [float(step) for step in net_options['steps'].split(',')]
     globals()["scales"]        = [float(scale) for scale in net_options['scales'].split(',')]
+    globals()['n_boxes']       = 10
 
+    if FLAGS.backup_dir is not None:
+        globals()['backupdir'] = FLAGS.backup_dir
+
+    print(backupdir)
     #Train parameters
     global max_epochs
-    try:
-        max_epochs = int(net_options['max_epochs'])
-    except KeyError:
-        nsamples = file_lines(trainlist)
-        max_epochs = (max_batches*batch_size)//nsamples+1
+    max_epochs = 1000
+    # try:
+    #     max_epochs = int(net_options['max_epochs'])
+    # except KeyError:
+    #     nsamples = file_lines(trainlist)
+    #     max_epochs = (max_batches*batch_size)//nsamples+1
 
-    seed = int(time.time())
+    seed = 0 # int(time.time())
     torch.manual_seed(seed)
     if use_cuda:
         os.environ['CUDA_VISIBLE_DEVICES'] = gpus
@@ -113,9 +119,6 @@ def main():
     #initialize the model
     if FLAGS.reset:
         model.seen = 0
-        init_epoch = 0
-    else:
-        init_epoch = model.seen//nsamples
 
     global loss_layers
     loss_layers = model.loss_layers
@@ -137,25 +140,27 @@ def main():
         else:
             params += [{'params': [value], 'weight_decay': decay*batch_size}]
     global optimizer
-    optimizer = optim.SGD(model.parameters(),
-                        lr=learning_rate/batch_size, momentum=momentum,
-                        dampening=0, weight_decay=decay*batch_size)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate/batch_size)
+    # optimizer = optim.SGD(model.parameters(),
+    #                     lr=learning_rate/batch_size, momentum=momentum,
+    #                     dampening=0, weight_decay=decay*batch_size)
 
     if evaluate:
         logging('evaluating ...')
         test(0)
     else:
         try:
-            max_epochs += init_epoch
-            print("Training for ({:d},{:d})".format(init_epoch+1, max_epochs))
+            print("Training for ({:d},{:d})".format(0, max_epochs))
             fscore = 0
-            if init_eval and not no_eval and init_epoch > test_interval:
+            if init_eval and not no_eval :
                 print('>> initial evaluating ...')
-                mfscore = test(init_epoch)
+                mfscore = test(0)
                 print('>> done evaluation.')
             else:
+                curmodel().seen = 0
                 mfscore = 0.5
-            for epoch in range(init_epoch+1, max_epochs+1):
+            for epoch in range(max_epochs):
+                print(epoch)
                 nsamples = train(epoch, monitor)
                 # if epoch % save_interval == 0:
                 #     savemodel(epoch, nsamples)
@@ -165,7 +170,7 @@ def main():
                     print('>> done evaluation.')
                 if FLAGS.localmax and fscore > mfscore:
                     mfscore = fscore
-                    savemodel(epoch, nsamples, True)
+                    savemodel(epoch * nsamples, True)
                 print('-'*90)
         except KeyboardInterrupt:
             print('='*80)
@@ -194,7 +199,7 @@ def curmodel():
     return cur_model
 
 def train(epoch, monitor):
-    global processed_batches
+    global processed_batches, learning_rate
     t0 = time.time()
     cur_model = curmodel()
     init_width = cur_model.width
@@ -209,14 +214,19 @@ def train(epoch, monitor):
                         train=True,
                         seen=cur_model.seen,
                         batch_size=batch_size,
-                        num_workers=num_workers),
+                        num_workers=num_workers, n_boxes=n_boxes),
                         batch_size=batch_size, shuffle=False, **kwargs)
 
     processed_batches = cur_model.seen//batch_size
+
+    print('current learning rate {}'.format(learning_rate))
     lr = adjust_learning_rate(optimizer, processed_batches)
-    logging('[%03d] processed %d samples, lr %e' % (epoch, epoch * len(train_loader.dataset), lr))
+    print('new learnning rate {}'.format(lr))
+
+    logging('[%03d] processed %d samples, lr %e' % (epoch, cur_model.seen, lr))
     model.train()
     t1 = time.time()
+
     avg_time = torch.zeros(9)
     for batch_idx, (data, target) in enumerate(train_loader):
         t2 = time.time()
@@ -225,6 +235,7 @@ def train(epoch, monitor):
         #if (batch_idx+1) % dot_interval == 0:
         #    sys.stdout.write('.')
 
+        cur_model.seen += 1
         t3 = time.time()
         data, target = data.to(device), target.to(device)
 
@@ -254,10 +265,11 @@ def train(epoch, monitor):
         #    l.backward(retain_graph=True if i < len(org_loss)-1 else False)
         # org_loss.reverse()
         sum(org_loss).backward()
-        monitor.add_scalar('yolov3/loss', sum(org_loss), n_iter)
-        monitor.add_scalar('yolov3/coord_loss', sum(coord_loss), n_iter)
-        monitor.add_scalar('yolov3/conf_loss', sum(conf_loss), n_iter)
-        monitor.add_scalar('yolov3/cls_loss', sum(cls_loss), n_iter)
+        monitor.add_scalar('yolov3/loss', sum(org_loss), cur_model.seen)
+        monitor.add_scalar('yolov3/coord_loss', sum(coord_loss), cur_model.seen)
+        monitor.add_scalar('yolov3/conf_loss', sum(conf_loss), cur_model.seen)
+        monitor.add_scalar('yolov3/cls_loss', sum(cls_loss), cur_model.seen)
+        # monitor.add_scalar('yolov3/lr', lr, cur_model.seen)
 
         nn.utils.clip_grad_norm_(model.parameters(), 10000)
         #for p in model.parameters():
@@ -292,9 +304,8 @@ def train(epoch, monitor):
         org_loss.clear()
         gc.collect()
 
-        n_iter = epoch * batch_size + batch_idx
-        if n_iter % save_interval == 0:
-            savemodel(n_iter, batch_idx)
+        if cur_model.seen % save_interval == 0:
+            savemodel(cur_model.seen)
 
     print('')
     t1 = time.time()
@@ -302,29 +313,25 @@ def train(epoch, monitor):
     logging('[%03d] training with %f samples/s' % (epoch, nsamples/(t1-t0)))
     return nsamples
 
-def savemodel(epoch, nsamples, curmax=False):
+def savemodel(n_iter, curmax=False):
     cur_model = curmodel()
     if curmax:
         logging('save local maximum weights to %s/localmax.weights' % (backupdir))
     else:
-        logging('save weights to %s/%06d.weights' % (backupdir, epoch))
-    cur_model.seen = epoch * nsamples
+        logging('save weights to %s/%d.weights' % (backupdir, n_iter))
+    # cur_model.seen = n_iter
     if curmax:
         cur_model.save_weights('%s/localmax.weights' % (backupdir))
     else:
-        cur_model.save_weights('%s/%06d.weights' % (backupdir, epoch))
-        old_wgts = '%s/%06d.weights' % (backupdir, epoch-keep_backup*save_interval)
-        try: #  it avoids the unnecessary call to os.path.exists()
-            os.remove(old_wgts)
-        except OSError:
-            pass
+        cur_model.save_weights('%s/%06d.weights' % (backupdir, n_iter))
+        old_wgts = '%s/%06d.weights' % (backupdir, n_iter-keep_backup*save_interval)
 
 def test(epoch):
     def truths_length(truths):
-        for i in range(50):
+        for i in range(n_boxes):
             if truths[i][1] == 0:
                 return i
-        return 50
+        return n_boxes
 
     model.eval()
     cur_model = curmodel()
@@ -374,11 +381,11 @@ def test(epoch):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', '-d',
-        type=str, default='cfg/sketch.data', help='data definition file')
+        type=str, required=True, help='data definition file')
     parser.add_argument('--config', '-c',
-        type=str, default='cfg/sketch.cfg', help='network configuration file')
+        type=str, required=True, help='network configuration file')
     parser.add_argument('--weights', '-w',
-        type=str, help='initial weights file')
+        type=str, required=True, help='initial weights file')
     parser.add_argument('--initeval', '-i', dest='init_eval', action='store_true',
         help='performs inital evalulation')
     parser.add_argument('--noeval', '-n', dest='no_eval', action='store_true',
@@ -387,6 +394,7 @@ if __name__ == '__main__':
         action="store_true", default=False, help='initialize the epoch and model seen value')
     parser.add_argument('--localmax', '-l',
         action="store_true", default=False, help='save net weights for local maximum fscore')
+    parser.add_argument('--backup_dir', '-bd', default=None, type=str)
 
     FLAGS, _ = parser.parse_known_args()
     main()
