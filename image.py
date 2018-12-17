@@ -38,31 +38,31 @@ def image_scale_and_shift_nosafe(img, new_w, new_h, net_w, net_h, dx, dy):
 def image_scale_and_shift_slow(img, new_w, new_h, net_w, net_h, dx, dy):
     scaled = np.array(img.resize((new_w, new_h)))
     # scaled.size : [height, width, channel]
-    
-    if dx > 0: 
+
+    if dx > 0:
         shifted = np.pad(scaled, ((0,0), (dx,0), (0,0)), mode='constant', constant_values=127)
     else:
         shifted = scaled[:,-dx:,:]
 
     if (new_w + dx) < net_w:
         shifted = np.pad(shifted, ((0,0), (0, net_w - (new_w+dx)), (0,0)), mode='constant', constant_values=127)
-               
-    if dy > 0: 
+
+    if dy > 0:
         shifted = np.pad(shifted, ((dy,0), (0,0), (0,0)), mode='constant', constant_values=127)
     else:
         shifted = shifted[-dy:,:,:]
-        
+
     if (new_h + dy) < net_h:
         shifted = np.pad(shifted, ((0, net_h - (new_h+dy)), (0,0), (0,0)), mode='constant', constant_values=127)
     #print("scaled: {} ==> dx {} dy {} for shifted: {}".format(scaled.shape, dx, dy, shifted.shape))
     return Image.fromarray(shifted[:net_h, :net_w,:])
-  
+
 def distort_image(im, hue, sat, val):
     im = im.convert('HSV')
     cs = list(im.split())
     cs[1] = cs[1].point(lambda i: i * sat)
     cs[2] = cs[2].point(lambda i: i * val)
-    
+
     def change_hue(x):
         x += hue*255
         if x > 255:
@@ -79,7 +79,7 @@ def distort_image(im, hue, sat, val):
 
 def rand_scale(s):
     scale = np.random.uniform(1, s)
-    if np.random.randint(2): 
+    if np.random.randint(2):
         return scale
     return 1./scale
 
@@ -91,9 +91,9 @@ def random_distort_image(im, hue, saturation, exposure):
     return res
 
 def data_augmentation_crop(img, shape, jitter, hue, saturation, exposure):
-    oh = img.height  
+    oh = img.height
     ow = img.width
-    
+
     dw =int(ow*jitter)
     dh =int(oh*jitter)
 
@@ -107,7 +107,7 @@ def data_augmentation_crop(img, shape, jitter, hue, saturation, exposure):
 
     sx = ow / float(swidth)
     sy = oh / float(sheight)
-    
+
     flip = np.random.randint(2)
 
     cropbb = np.array([pleft, ptop, pleft + swidth - 1, ptop + sheight - 1])
@@ -130,20 +130,20 @@ def data_augmentation_crop(img, shape, jitter, hue, saturation, exposure):
 
     sized = new_img.resize(shape)
     del cropped, new_img
-    
+
     dx = (float(pleft)/ow) * sx
     dy = (float(ptop) /oh) * sy
 
-    if flip: 
+    if flip:
         sized = sized.transpose(Image.FLIP_LEFT_RIGHT)
     img = random_distort_image(sized, hue, saturation, exposure)
     # for compatibility to nocrop version (like original version)
-    return img, flip, dx, dy, sx, sy 
+    return img, flip, dx, dy, sx, sy
 
 def data_augmentation_nocrop(img, shape, jitter, hue, sat, exp):
     net_w, net_h = shape
     img_w, img_h = img.width, img.height
-        
+
     # determine the amount of scaling and cropping
     dw = jitter * img_w
     dh = jitter * img_h
@@ -158,28 +158,28 @@ def data_augmentation_nocrop(img, shape, jitter, hue, sat, exp):
     else:
         new_w = int(scale * net_w)
         new_h = int(net_w / new_ar)
-            
+
     dx = int(np.random.uniform(0, net_w - new_w))
     dy = int(np.random.uniform(0, net_h - new_h))
     sx, sy = new_w / net_w, new_h / net_h
-        
+
     # apply scaling and shifting
     new_img = image_scale_and_shift(img, new_w, new_h, net_w, net_h, dx, dy)
-        
+
     # randomly distort hsv space
     new_img = random_distort_image(new_img, hue, sat, exp)
-        
+
     # randomly flip
     flip = np.random.randint(2)
-    if flip: 
+    if flip:
         new_img = new_img.transpose(Image.FLIP_LEFT_RIGHT)
-            
-    dx, dy = dx/net_w, dy/net_h
-    return new_img, flip, dx, dy, sx, sy 
 
-def fill_truth_detection(labpath, crop, flip, dx, dy, sx, sy):
-    max_boxes = 50
-    label = np.zeros((max_boxes,5))
+    dx, dy = dx/net_w, dy/net_h
+    return new_img, flip, dx, dy, sx, sy
+
+def fill_truth_detection(labpath, crop, flip, dx, dy, sx, sy, n_boxes=50):
+    # max_boxes = n_boxes
+    label = np.zeros((n_boxes,5))
     if os.path.getsize(labpath):
         bs = np.loadtxt(labpath)
         if bs is None:
@@ -191,27 +191,27 @@ def fill_truth_detection(labpath, crop, flip, dx, dy, sx, sy):
             y1 = bs[i][2] - bs[i][4]/2
             x2 = bs[i][1] + bs[i][3]/2
             y2 = bs[i][2] + bs[i][4]/2
-            
-            x1 = min(0.999, max(0, x1 * sx - dx)) 
-            y1 = min(0.999, max(0, y1 * sy - dy)) 
+
+            x1 = min(0.999, max(0, x1 * sx - dx))
+            y1 = min(0.999, max(0, y1 * sy - dy))
             x2 = min(0.999, max(0, x2 * sx - dx))
             y2 = min(0.999, max(0, y2 * sy - dy))
-            
+
             bs[i][1] = (x1 + x2)/2 # center x
             bs[i][2] = (y1 + y2)/2 # center y
             bs[i][3] = (x2 - x1)   # width
             bs[i][4] = (y2 - y1)   # height
 
             if flip:
-                bs[i][1] =  0.999 - bs[i][1] 
-            
+                bs[i][1] =  0.999 - bs[i][1]
+
             # when crop is applied, we should check the cropped width/height ratio
             if bs[i][3] < 0.002 or bs[i][4] < 0.002 or \
                 (crop and (bs[i][3]/bs[i][4] > 20 or bs[i][4]/bs[i][3] > 20)):
                 continue
             label[cc] = bs[i]
             cc += 1
-            if cc >= 50:
+            if cc >= n_boxes:
                 break
 
     label = np.reshape(label, (-1))
@@ -245,14 +245,14 @@ def correct_yolo_boxes(boxes, im_w, im_h, net_w, net_h):
     xo, xs = (net_w - new_w)/(2*net_w), net_w/new_w
     yo, ys = (net_h - new_h)/(2*net_h), net_h/new_h
     for i in range(len(boxes)):
-        b = boxes[i] 
+        b = boxes[i]
         b[0] = (b[0] - xo) * xs
         b[1] = (b[1] - yo) * ys
         b[2] *= xs
         b[3] *= ys
     return
 
-def load_data_detection(imgpath, shape, crop, jitter, hue, saturation, exposure):
+def load_data_detection(imgpath, shape, crop, jitter, hue, saturation, exposure, n_boxes=50):
     labpath = imgpath.replace('images', 'labels').replace('JPEGImages', 'labels').replace('.jpg', '.txt').replace('.png','.txt')
 
     ## data augmentation
@@ -261,5 +261,5 @@ def load_data_detection(imgpath, shape, crop, jitter, hue, saturation, exposure)
         img,flip,dx,dy,sx,sy = data_augmentation_crop(img, shape, jitter, hue, saturation, exposure)
     else:            # original version
         img,flip,dx,dy,sx,sy = data_augmentation_nocrop(img, shape, jitter, hue, saturation, exposure)
-    label = fill_truth_detection(labpath, crop, flip, -dx, -dy, sx, sy)
+    label = fill_truth_detection(labpath, crop, flip, -dx, -dy, sx, sy, n_boxes=n_boxes)
     return img, label
