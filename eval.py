@@ -75,10 +75,38 @@ def main():
     model = model.to(torch.device("cuda" if use_cuda else "cpu"))
 
     weight_files = list_weights(FLAGS.weights)
+
+    best = {'precision_model':None, 'precision':0.0}
+    results = {}
+    order = {}
     for w in weight_files:
         model.load_weights(w)
         logging('evaluating ... %s' % (w))
-        test()
+        performances = test()
+        results[w] = performances
+        if best['precision'] < performances['precision']:
+            best['precision'] = performances['precision']
+            best['model_precision'] = w
+        order[performances['precision']] = w
+
+    ordered = collections.OrderedDict(sorted(order.items()))
+
+    print('')
+    print('')
+    print('Summary:')
+    report = open('evaluation_report.txt', 'w')
+    for prec, model in ordered.items():
+        values = results[model]
+        model = model.split('/')[-1].split('.')[-2]
+        report.write('Results {}: precision {} recall{} fscore {}'.format(model, values['precision'],
+                                                            values['recall'], values['fscore']))
+
+    print('Best precision: {} of model {}'.format(best['precision'],
+                                    best['precision_model'].split('/')[-1].split('.')[-2]))
+
+    report.write('Best precision: {} of model {}'.format(best['precision'],
+                                    best['precision_model'].split('/')[-1].split('.')[-2]))
+    report.close()
 
 def test():
     def truths_length(truths):
@@ -128,6 +156,7 @@ def test():
     recall = 1.0*correct/(total+eps)
     fscore = 2.0*precision*recall/(precision+recall+eps)
     logging("correct: %d, precision: %f, recall: %f, fscore: %f" % (correct, precision, recall, fscore))
+    return {'precision':precision, 'recall':recall, 'fscore':fscore}
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
