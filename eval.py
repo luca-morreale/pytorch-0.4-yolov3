@@ -2,6 +2,7 @@ from __future__ import print_function
 import sys
 import time
 import torch
+from tqdm import tqdm
 from torchvision import datasets, transforms
 import os
 import dataset
@@ -13,6 +14,7 @@ from cfg import parse_cfg
 from darknet import Darknet
 import argparse
 from image import correct_yolo_boxes
+import collections
 
 # etc parameters
 use_cuda      = True
@@ -79,32 +81,41 @@ def main():
     best = {'precision_model':None, 'precision':0.0}
     results = {}
     order = {}
+    report = open('evaluation_report_bb.txt', 'w')
+
+    wi = 0
     for w in weight_files:
+        wi  += 1
+
         model.load_weights(w)
-        logging('evaluating ... %s' % (w))
         performances = test()
+
         results[w] = performances
-        if best['precision'] < performances['precision']:
+        if wi == 0 or best['precision'] < performances['precision']:
             best['precision'] = performances['precision']
-            best['model_precision'] = w
+            best['precision_model'] = w
         order[performances['precision']] = w
+
+        weights_name = w.split('/')[-1].split('.')[-2]
+        report.write('Results {}: precision {} recall{} fscore {}'.format(weights_name,
+                                                        performances['precision'],
+                                                        performances['recall'],
+                                                        performances['fscore']))
+
+        print('[{}] Results {}: precision {} recall{} fscore {}'.format(wi, weights_name,
+                                                        performances['precision'],
+                                                        performances['recall'],
+                                                        performances['fscore']))
+        report.flush()
 
     ordered = collections.OrderedDict(sorted(order.items()))
 
     print('')
     print('')
-    print('Summary:')
-    report = open('evaluation_report.txt', 'w')
-    for prec, model in ordered.items():
-        values = results[model]
-        model = model.split('/')[-1].split('.')[-2]
-        report.write('Results {}: precision {} recall{} fscore {}'.format(model, values['precision'],
-                                                            values['recall'], values['fscore']))
-
     print('Best precision: {} of model {}'.format(best['precision'],
                                     best['precision_model'].split('/')[-1].split('.')[-2]))
 
-    report.write('Best precision: {} of model {}'.format(best['precision'],
+    report.write('Best precision: {} of model {}\n'.format(best['precision'],
                                     best['precision_model'].split('/')[-1].split('.')[-2]))
     report.close()
 
@@ -126,7 +137,7 @@ def test():
         shape=(0,0)
     else:
         shape=(model.width, model.height)
-    for data, target, org_w, org_h in test_loader:
+    for data, target, org_w, org_h in tqdm(test_loader):
         data = data.to(device)
         output = model(data)
         all_boxes = get_all_boxes(output, shape, conf_thresh, num_classes, use_cuda=use_cuda)
@@ -155,8 +166,7 @@ def test():
     precision = 1.0*correct/(proposals+eps)
     recall = 1.0*correct/(total+eps)
     fscore = 2.0*precision*recall/(precision+recall+eps)
-    logging("correct: %d, precision: %f, recall: %f, fscore: %f" % (correct, precision, recall, fscore))
-    return {'precision':precision, 'recall':recall, 'fscore':fscore}
+    return {'precision':precision, 'recall':recall, 'fscore':fscore, 'correct':correct}
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
